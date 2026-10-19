@@ -107,15 +107,17 @@ let search_in ~gt sw advisories =
 
 let jump () =
   OpamSystem.init ();
-  OpamStateConfig.update ~root_dir:(OpamStateConfig.opamroot ()) ();
+  (* Without opam-client, OPAM* variables are only read once registered. This
+     must happen before anything reads OPAMSWITCH, its value is cached. *)
+  OpamStd.Config.E.update
+    (OpamStateConfig.E.SWITCH (OpamStd.Env.getopt "OPAMSWITCH"));
+  let root_dir = OpamStateConfig.opamroot () in
+  (* load_defaults picks the switch from the current directory or the config
+     file, then init lets OPAMSWITCH override it, like opam does. *)
+  ignore (OpamStateConfig.load_defaults ~lock_kind:`Lock_read root_dir);
+  OpamStateConfig.init ~root_dir ();
   OpamGlobalState.with_ `Lock_none @@ fun gt ->
   let gt = OpamGlobalState.fix_switch_list gt in
-  let current =
-    match OpamStateConfig.load ~lock_kind:`Lock_read (OpamStateConfig.opamroot ()) with
-    | Some t -> OpamFile.Config.switch t
-    | None -> None
-  in
-  let cur_dir = OpamStateConfig.get_current_switch_from_cwd gt.root in
   let* advisories = get_advisories () in
   let advisories =
     let to_pkg_set (name, vs) =
@@ -123,12 +125,13 @@ let jump () =
     in
     List.map (fun (id, summ, vs) -> id, summ, List.map to_pkg_set vs) advisories
   in
-  match cur_dir, current with
-  | None, None ->
+  match OpamStateConfig.get_switch_opt () with
+  | None ->
     Logs.err (fun m -> m "no switch!");
     Error (`Msg "couldn't find switch")
-  | Some sw, _ -> search_in ~gt sw advisories
-  | None, Some sw -> search_in ~gt sw advisories
+  | Some sw when not (OpamGlobalState.switch_exists gt sw) ->
+    Error (`Msg (Fmt.str "switch %s is not installed" (OpamSwitch.to_string sw)))
+  | Some sw -> search_in ~gt sw advisories
 
 let setup_log style_renderer level =
   Fmt_tty.setup_std_outputs ?style_renderer ();
