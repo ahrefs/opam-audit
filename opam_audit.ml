@@ -112,22 +112,25 @@ let jump () switch_export =
       Logs.app (fun m -> m "Looking for vulnerable packages in switch export file %s" file);
       Ok sw_exp.OpamFile.SwitchExport.selections.OpamTypes.sel_installed
     | None ->
-      OpamStateConfig.update ~root_dir:(OpamStateConfig.opamroot ()) ();
+      (* Without opam-client, OPAM* variables are only read once registered. This
+         must happen before anything reads OPAMSWITCH, its value is cached. *)
+      OpamStd.Config.E.update
+        (OpamStateConfig.E.SWITCH (OpamStd.Env.getopt "OPAMSWITCH"));
+      let root_dir = OpamStateConfig.opamroot () in
+      (* load_defaults picks the switch from the current directory or the config
+         file, then init lets OPAMSWITCH override it, like opam does. *)
+      ignore (OpamStateConfig.load_defaults ~lock_kind:`Lock_read root_dir);
+      OpamStateConfig.init ~root_dir ();
       OpamGlobalState.with_ `Lock_none @@ fun gt ->
       let gt = OpamGlobalState.fix_switch_list gt in
-      let current =
-        match OpamStateConfig.load ~lock_kind:`Lock_read (OpamStateConfig.opamroot ()) with
-        | Some t -> OpamFile.Config.switch t
-        | None -> None
-      in
-      let cur_dir = OpamStateConfig.get_current_switch_from_cwd gt.root in
       let* sw =
-        match cur_dir, current with
-        | None, None ->
+        match OpamStateConfig.get_switch_opt () with
+        | None ->
           Logs.err (fun m -> m "no switch!");
           Error (`Msg "couldn't find switch")
-        | Some sw, _ -> Ok sw
-        | None, Some sw -> Ok sw
+        | Some sw when not (OpamGlobalState.switch_exists gt sw) ->
+          Error (`Msg (Fmt.str "switch %s is not installed" (OpamSwitch.to_string sw)))
+        | Some sw -> Ok sw
       in
       Logs.app (fun m -> m "Looking for vulnerable packages in switch %s" (OpamSwitch.to_string sw));
       let selections = OpamSwitchState.load_selections ~lock_kind:`Lock_read gt sw in
